@@ -2,10 +2,14 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { frameForCar, frameAt } from './route.js';
+import { idleMotion } from './stunt.js';
 
 const wheelCodes = ['FL','FR','RL','RR'];
 const tau = Math.PI * 2;
 const yAxis = new THREE.Vector3(0, 1, 0);
+const flipAxis = new THREE.Vector3(1,0,0);
+const galleryAxis = new THREE.Vector3(.35,0,-Math.sqrt(1-.35**2));
+const centreOfMass = new THREE.Vector3(0,.62,.13);
 
 function skin(uCount, vCount, point) {
   const p = [], idx = [];
@@ -117,28 +121,35 @@ export async function loadSupra(manager) {
     if(o.material.name==='GlassMtl.002')o.material.envMapIntensity=1.09;
     if(o.material.name==='InteriorA')o.material.envMapIntensity=.47;
   });
-  contactPatch(rig);
+  const root=new THREE.Group();
+  root.add(rig);
+  const shadow=contactPatch(root);
   const wheels=wheelCodes.map(code=>({code,hub:rig.getObjectByName('Hub'+code),spin:rig.getObjectByName('Spin'+code)}));
   const radius=wheels[0].hub.userData.radius;
   const baseHeight=body.position.y;
   const a=new THREE.Vector3(),b=new THREE.Vector3();
   return {
-    rig, radius, reflective,
-    pose(s, time, speed, acceleration) {
+    root, rig, radius, reflective,
+    pose(s, time, speed, acceleration, motion=idleMotion) {
       const road=frameForCar(s,time);
-      rig.position.copy(road.position).addScaledVector(road.up,.007);
-      rig.quaternion.copy(road.rotation);
+      root.position.copy(road.position).addScaledVector(road.up,.007);
+      root.quaternion.copy(road.rotation);
+      rig.quaternion.setFromAxisAngle(motion.tight ? galleryAxis : flipAxis,motion.angle);
+      rig.position.copy(centreOfMass).applyQuaternion(rig.quaternion).negate().add(centreOfMass);
+      rig.position.y+=motion.lift;
+      shadow.material.opacity=Math.exp(-2.1*motion.lift);
+      shadow.scale.setScalar(1+.16*motion.lift);
       a.copy(frameAt(s-1.5).forward);b.copy(frameAt(s+1.5).forward);
       const curvature=Math.atan2(a.z*b.x-a.x*b.z,a.dot(b))/3;
       const vibration=.0024*Math.sin(s*.83)+.0011*Math.sin(s*2.17);
-      body.position.y=baseHeight+vibration;
+      body.position.y=baseHeight+vibration+motion.spring;
       body.rotation.x=-.0024*acceleration+.0018*Math.sin(s*.82);
       body.rotation.z=THREE.MathUtils.clamp(curvature*speed*speed*.013,-.03,.03)+.0015*Math.sin(s*.59);
       for(const {code,hub,spin} of wheels) {
         hub.rotation.y=code[0]==='F'?Math.atan2(2.53*curvature,1-hub.position.x*curvature):0;
         spin.rotation.x=(s/radius)%tau;
       }
-      rig.updateMatrixWorld(true);
+      root.updateMatrixWorld(true);
       return road;
     },
   };

@@ -12,11 +12,12 @@ export function vehicleProbe(renderer, scene, vehicle, compact) {
   const camera=new THREE.CubeCamera(.13,240,target);
   const origin={value:new THREE.Vector3()}, basis={value:new THREE.Matrix3()}, roof={value:0};
   const carInverse={value:new THREE.Matrix4()};
+  const probeHeight={value:.94};
   for(const mat of vehicle.reflective) {
     const lacquer=mat.name==='Paint' || mat.name==='Lacquered rear aerofoil';
     mat.envMap=target.texture;
     mat.onBeforeCompile=shader=>{
-      Object.assign(shader.uniforms,{probeOrigin:origin,probeBasis:basis,probeRoof:roof,carInverse:carInverse});
+      Object.assign(shader.uniforms,{probeOrigin:origin,probeBasis:basis,probeRoof:roof,probeHeight,carInverse:carInverse});
       shader.vertexShader='varying vec3 probeSurface;\n'+shader.vertexShader.replace(
         '#include <worldpos_vertex>','#include <worldpos_vertex>\nprobeSurface = (modelMatrix*vec4(transformed,1.)).xyz;',
       );
@@ -28,9 +29,10 @@ export function vehicleProbe(renderer, scene, vehicle, compact) {
         uniform vec3 probeOrigin;
         uniform mat3 probeBasis;
         uniform float probeRoof;
+        uniform float probeHeight;
         vec3 localReflection(vec3 ray) {
           vec3 worldOffset=probeSurface-probeOrigin;
-          vec3 p=probeBasis*worldOffset+vec3(0.,.94,0.);
+          vec3 p=probeBasis*worldOffset+vec3(0.,probeHeight,0.);
           vec3 dir=probeBasis*ray;
           float t=190.;
           if(dir.y < -.006) t=min(t,-p.y/dir.y);
@@ -61,19 +63,20 @@ export function vehicleProbe(renderer, scene, vehicle, compact) {
     mat.needsUpdate=true;
   }
   let last=-Infinity, lastS=-Infinity;
-  return function capture(s,time,frame,force=false) {
+  return function capture(s,time,frame,force=false,lift=0) {
     carInverse.value.copy(vehicle.rig.matrixWorld).invert();
     if(!force && (time-last<(compact?.245:.125) || Math.abs(s-lastS)<.65))return;
     last=time;lastS=s;
-    origin.value.copy(frame.position).addScaledVector(frame.up,.94);
+    probeHeight.value=.94+lift;
+    origin.value.copy(frame.position).addScaledVector(frame.up,probeHeight.value);
     camera.position.copy(origin.value);
     basis.value.set(frame.lateral.x,frame.lateral.y,frame.lateral.z,
       frame.up.x,frame.up.y,frame.up.z,frame.forward.x,frame.forward.y,frame.forward.z);
     roof.value=Number(covered(Math.floor(wrap(s)/span)));
     const update=renderer.shadowMap.autoUpdate;
     renderer.shadowMap.autoUpdate=false;
-    vehicle.rig.visible=false;
+    vehicle.root.visible=false;
     try{camera.update(renderer,scene);}
-    finally{vehicle.rig.visible=true;renderer.shadowMap.autoUpdate=update;}
+    finally{vehicle.root.visible=true;renderer.shadowMap.autoUpdate=update;}
   };
 }

@@ -6,6 +6,7 @@ import { createCamera, shots } from './camera.js';
 import { vehicleProbe } from './reflections.js';
 import { makeLens } from './lens.js';
 import { covered, span, start, wrap } from './route.js';
+import { createStunt } from './stunt.js';
 
 const el = (id) => document.getElementById(id);
 const stage=el('drive'),canvas=el('road'),controls=el('controls'),status=el('loading'),details=el('details');
@@ -59,9 +60,11 @@ stage.addEventListener('pointermove',showControls,{passive:true});
 stage.addEventListener('pointerdown',showControls,{passive:true});
 document.addEventListener('keydown',e=>{
   if(!ready || e.metaKey || e.ctrlKey || e.altKey || details.open)return;
-  if(e.code==='Space' && e.target.closest('button'))return;
+  if(e.code==='Space' && e.target.closest?.('button'))return;
   if(e.code==='Space'){e.preventDefault();setPlay(!playing);}
   else if(['Digit1','Digit2','Digit3'].includes(e.code))select(Number(e.code.at(-1))-1);
+  else if(e.code==='KeyS' && !e.repeat)el('smoke').click();
+  else if(e.code==='KeyJ' && !e.repeat)el('flip').click();
   else if(e.code==='KeyF')void fullscreen();
   else if(e.code==='KeyH'){
     hiddenByKey=!stage.classList.contains('quiet');
@@ -110,9 +113,23 @@ async function init() {
   scene.environment=location.environment.texture;
   scene.environmentIntensity=.88;
   const road=buildRoad(location.materials);
-  scene.add(skyDome(location.sky),road.world,car.rig);
+  scene.add(skyDome(location.sky),road.world,car.root);
   const lens=makeLens(renderer,compact),probe=vehicleProbe(renderer,scene,car,compact);
   let s=start,time=0,speed=19.2,aspect=1,rateScale=1,lastPerf=0,slowFrames=0,fastFrames=0,performanceFrames=0;
+  const stunt=createStunt(),smokeButton=el('smoke'),flipButton=el('flip');
+  smokeButton.addEventListener('click',()=>{
+    const enabled=smokeButton.getAttribute('aria-pressed')!=='true';
+    lens.setSmoke(enabled);
+    smokeButton.setAttribute('aria-pressed',String(enabled));
+    smokeButton.title=(enabled?'Выключить':'Включить')+' дым (S)';
+    touchCamera();
+  });
+  flipButton.addEventListener('click',()=>{
+    if(!stunt.start(time,s,speed))return;
+    flipButton.setAttribute('aria-disabled','true');
+    if(!playing)setPlay(true);
+    else touchCamera();
+  });
   const surfaceSize=new THREE.Vector2(),target=new THREE.Vector3();
   const lightX=new THREE.Vector3().crossVectors(new THREE.Vector3(0,1,0),sunDirection).normalize();
   const lightY=new THREE.Vector3().crossVectors(sunDirection,lightX).normalize();
@@ -136,8 +153,8 @@ async function init() {
     }
     sun.target.position.copy(target);sun.position.copy(target).addScaledVector(sunDirection,53);
   }
-  let carFrame=car.pose(s,time,speed,0);
-  road.update(s);placeSun(carFrame);rigCamera.place(carFrame,time,1,aspect);
+  let motion=stunt.at(time),carFrame=car.pose(s,time,speed,0,motion);
+  road.update(s);placeSun(carFrame);rigCamera.place(carFrame,time,1,aspect,motion);
   scene.updateMatrixWorld(true);
   probe(s,0,carFrame,true);
   await renderer.compileAsync(scene,camera);
@@ -160,12 +177,14 @@ async function init() {
       rolled=.5*(speed+previousSpeed)*dt;s+=rolled;
     }
     renderTime+=dt;
-    road.update(s);carFrame=car.pose(s,time,speed,(speed-previousSpeed)/dt);
+    motion=stunt.at(time);
+    if(!motion.active && flipButton.hasAttribute('aria-disabled'))flipButton.removeAttribute('aria-disabled');
+    road.update(s);carFrame=car.pose(s,time,speed,(speed-previousSpeed)/dt,motion);
     placeSun(carFrame);
-    const focus=rigCamera.place(carFrame,time,dt,aspect);
-    probe(s,renderTime,carFrame);
+    const focus=rigCamera.place(carFrame,time,dt,aspect,motion);
+    probe(s,renderTime,carFrame,false,motion.lift);
     const openSky=!covered(Math.floor(wrap(s)/span));
-    lens.render(scene,camera,car.rig,dt,rolled/car.radius,focus,playing,time,s-start,openSky);
+    lens.render(scene,camera,car,{elapsed:dt,wheelAngle:rolled/car.radius,focus,moving:playing,time,distance:s-start,openSky,lift:motion.lift});
     const speedText=Math.round(speed*3.6)+' км/ч';
     if(speedText!==oldSpeed){el('speed').textContent=speedText;oldSpeed=speedText;}
     // Reduce pixel cost only after sustained slow frames, excluding loading,

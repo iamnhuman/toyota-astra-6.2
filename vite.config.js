@@ -62,6 +62,7 @@ export default defineConfig({
       });
     },
     async writeBundle({ dir }, bundle) {
+      await copyFile(join(root, 'preview.jpg'), join(dir, 'preview.jpg'));
       const html = await embedScene(bundle, dir);
       for (const name of entryNames) {
         const built = join(dir, name);

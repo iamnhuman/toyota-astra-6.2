@@ -39,13 +39,22 @@ export function makeTurbulence(size = 48) {
   return texture;
 }
 
+export const smokeBounds = /* glsl */ `
+  vec2 plumeInterval(vec3 eyePoint, vec3 ray, float lift) {
+    vec3 inv=mix(vec3(-1.),vec3(1.),greaterThanEqual(ray,vec3(0.)))/max(abs(ray),vec3(.00001));
+    vec3 a=(vec3(-2.48,.035,-7.35)-eyePoint)*inv;
+    vec3 b=(vec3(2.48,3.15+lift,3.15)-eyePoint)*inv;
+    vec3 lo=min(a,b), hi=max(a,b);
+    return vec2(max(0.,max(max(lo.x,lo.y),lo.z)),min(min(hi.x,hi.y),hi.z));
+  }
+`;
+
 export const smokeField = /* glsl */ `
   uniform highp sampler3D turbulence;
-  uniform float seconds, drift;
-  const vec3 lowCorner = vec3(-2.48, .035, -7.35);
-  const vec3 highCorner = vec3(2.48, 3.15, 3.15);
+  uniform float seconds, drift, lift;
 
   float smokeDensity(vec3 p, out float sunEdge) {
+    p.y-=lift*smoothstep(-5.8,-1.15,p.z);
     // Two flows meet over the roof. On either flank the wheel wake rolls
     // around its own centre before opening into a pair of trailing vortices.
     float trail = max(0., -p.z-1.25);
@@ -56,13 +65,13 @@ export const smokeField = /* glsl */ `
     float ridge = .83 + .53*exp(-roofZ*roofZ) + .10*roll;
     float sideY = .56 + .16*roll + .12*min(trail, 1.);
     float lengthMask = 1.-smoothstep(2.14, 2.95, abs(p.z-.10));
-    float crown = 1.-smoothstep(.36, 1.26, length(vec2(p.x*.85, (p.y-ridge-.16)*1.67)));
+    float crown = 1.-smoothstep(.16, 1.17, length(vec2((abs(p.x)-.40-.15*roll)*1.54, (p.y-ridge-.12)*2.52)));
     float shoulder = 1.-smoothstep(.25, 1.22, length(vec2((abs(p.x)-.94-.09*cos(phase))*1.91, (p.y-sideY)*1.58)));
     float wakeY = .66 + .21*trail + .19*sin(trail*1.64-seconds*1.47+side*.94);
     float wakeX = .72 + .09*trail + .21*cos(trail*1.34-seconds*1.12+side*1.76);
     float wake = 1.-smoothstep(.15, 1.35, length(vec2((abs(p.x)-wakeX)*1.21, (p.y-wakeY)*1.23)));
     wake *= smoothstep(0., 1.10, trail)*(1.-smoothstep(2.65, 5.85, trail));
-    float envelope = max(max(.96*crown, shoulder)*lengthMask, wake*.92);
+    float envelope = max(max(.79*crown, .95*shoulder)*lengthMask, wake*.95);
     envelope *= smoothstep(.035,.22,p.y);
     sunEdge = 0.;
     if (envelope < .008) return 0.;
@@ -70,13 +79,16 @@ export const smokeField = /* glsl */ `
     vec3 flow = p*vec3(.31, .38, .255) + vec3(.013*seconds,-.12*seconds,drift);
     vec3 warp = texture(turbulence, flow*.54+vec3(.13,.52,.30)).gba - .5;
     // Counter-rotating shear folds the noise around the two sides of the car.
-    vec3 folded = flow + warp*1.05 + vec3(.070*roll, .092*cos(phase+p.y*1.7), .036*side*roll);
+    float swirl=phase+.95*p.y+2.7*warp.x;
+    vec3 folded = flow + warp*.86 + vec3(.14*cos(swirl), .13*sin(swirl), .042*side*roll);
     vec4 cloud = texture(turbulence, folded);
     float fray = texture(turbulence, folded*2.81-warp*.54+vec3(.29,.17,.53)).r;
     float billow = .76*cloud.r + .24*fray;
-    float mass = smoothstep(.385, .695, billow + .31*envelope - .19);
-    sunEdge = clamp(.62 + 1.34*(cloud.g-cloud.r) + .18*roll, .05, 1.);
-    return envelope*mass*3.35;
+    float ribbon=1.-smoothstep(.022,.135,abs(cloud.b+.23*(fray-.5)-.53));
+    float mass=smoothstep(.415,.67,billow+.27*envelope-.14);
+    float sunSide=texture(turbulence,folded+sunlight*.091).r;
+    sunEdge=clamp(.52+3.2*(cloud.r-sunSide)+.17*ribbon,.025,1.);
+    return envelope*mass*(.63+2.14*ribbon);
   }
 `;
 
@@ -92,6 +104,7 @@ const fragment = /* glsl */ `
   uniform mat4 localFromClip;
   uniform vec3 eye, sunlight;
   uniform float daylight;
+  ${smokeBounds}
   ${smokeField}
   void main() {
     float depth = texture(sceneDepth,screenUV).r;
@@ -99,15 +112,11 @@ const fragment = /* glsl */ `
     vec3 end = h.xyz/h.w, delta = end-eye;
     float farPoint=length(delta);
     vec3 ray=delta/max(farPoint,.00001);
-    vec3 reciprocal=mix(vec3(-1.),vec3(1.),greaterThanEqual(ray,vec3(0.)))/max(abs(ray),vec3(.00001));
-    vec3 a=(lowCorner-eye)*reciprocal, b=(highCorner-eye)*reciprocal;
-    vec3 first=min(a,b), last=max(a,b);
-    float entry=max(max(max(first.x,first.y),first.z),0.);
-    float exitPoint=min(min(min(last.x,last.y),last.z),farPoint);
+    vec2 bounds=plumeInterval(eye,ray,lift);
+    float entry=bounds.x,exitPoint=min(bounds.y,farPoint);
     if(exitPoint<=entry){soot=vec4(0.);return;}
     float stepSize=(exitPoint-entry)/float(SMOKE_STEPS);
-    float jitter=fract(52.9829189*fract(dot(gl_FragCoord.xy,vec2(.06711056,.00583715))));
-    vec3 p=eye+ray*(entry+stepSize*(.17+.66*jitter));
+    vec3 p=eye+ray*(entry+.5*stepSize);
     vec3 radiance=vec3(0.);
     float transmission=1.;
     float rim=pow(clamp(dot(ray,sunlight)*.5+.5,0.,1.),3.);
@@ -116,7 +125,7 @@ const fragment = /* glsl */ `
       float density=smokeDensity(p,edge);
       float intercepted=1.-exp(-density*stepSize);
       float light=edge*exp(-.54*density)*daylight;
-      vec3 scattering=mix(vec3(.009,.010,.015),vec3(.106,.113,.123),light*(.73+.27*rim));
+      vec3 scattering=mix(vec3(.007,.007,.009),vec3(.121,.117,.119),light*(.71+.29*rim));
       // Red paint reflects just into the underside of the soot.
       scattering.r+=.006*exp(-1.65*abs(p.y-.70))*light;
       radiance+=transmission*intercepted*scattering;
@@ -138,7 +147,7 @@ export function createSmoke(depth, compact, type) {
   const uniforms = {
     sceneDepth:{value:depth}, turbulence:{value:makeTurbulence()},
     localFromClip:{value:new THREE.Matrix4()}, eye:{value:new THREE.Vector3()}, sunlight:{value:new THREE.Vector3()},
-    seconds:{value:0}, drift:{value:0}, daylight:{value:1},
+    seconds:{value:0}, drift:{value:0}, daylight:{value:1}, lift:{value:0},
   };
   const material = new THREE.ShaderMaterial({
     glslVersion:THREE.GLSL3, uniforms, defines:{SMOKE_STEPS:compact?26:42},
@@ -152,12 +161,12 @@ export function createSmoke(depth, compact, type) {
       size.set(Math.max(2,Math.ceil(w*ratio)),Math.max(2,Math.ceil(h*ratio)));
       target.setSize(size.x,size.y);
     },
-    update(camera,inverseCar,inverseVP,time,distance,daylight) {
-      uniforms.localFromClip.value.multiplyMatrices(inverseCar,inverseVP);
-      uniforms.eye.value.setFromMatrixPosition(camera.matrixWorld).applyMatrix4(inverseCar);
-      uniforms.sunlight.value.copy(sunDirection).transformDirection(inverseCar);
+    update(camera,inverseRoad,inverseVP,time,distance,daylight,lift) {
+      uniforms.localFromClip.value.multiplyMatrices(inverseRoad,inverseVP);
+      uniforms.eye.value.setFromMatrixPosition(camera.matrixWorld).applyMatrix4(inverseRoad);
+      uniforms.sunlight.value.copy(sunDirection).transformDirection(inverseRoad);
       uniforms.seconds.value=time;uniforms.drift.value=distance*.022;
-      uniforms.daylight.value=daylight;
+      uniforms.daylight.value=daylight;uniforms.lift.value=lift;
     },
   };
 }
