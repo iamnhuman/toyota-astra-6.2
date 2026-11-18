@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vite';
 
 const root = fileURLToPath(new URL('.', import.meta.url));
-const entryName = 'ingex.html';
+const entryNames = ['index.html', 'ingex.html'];
 const mime = { '.webp': 'image/webp', '.hdr': 'application/octet-stream', '.glb': 'model/gltf-binary' };
 
 async function embedScene(bundle, directory) {
@@ -12,7 +12,7 @@ async function embedScene(bundle, directory) {
   const game = files.find(file => file.type === 'chunk' && file.isEntry);
   const stylesheet = files.find(file => file.type === 'asset' && file.fileName.endsWith('.css'));
   const css = Buffer.from(stylesheet.source).toString();
-  let html = await readFile(join(directory, 'index.html'), 'utf8');
+  let html = await readFile(join(directory, 'src/scene.html'), 'utf8');
 
   const assets = {};
   for (const folder of ['car', 'road', 'light']) {
@@ -35,7 +35,6 @@ async function embedScene(bundle, directory) {
   const sources = credits.match(/<ul>[\s\S]*?<\/ul>/)[0];
   const script = game.code.replace(/<\/script/gi, '<\\/script');
   return html
-    .replace(/\s*<script id="file-entry">[\s\S]*?<\/script>/, '')
     .replace(/\s*<script\b[^>]*src="[^"]+"[^>]*><\/script>/, '')
     .replace(/<link\b[^>]*rel="stylesheet"[^>]*>/, () => '<style>' + css + '</style>')
     .replace(/<p id="source-link">[\s\S]*?<\/p>/, () => '<details><summary>Исходные материалы</summary>' + sources + '</details>')
@@ -45,26 +44,32 @@ async function embedScene(bundle, directory) {
 }
 
 export default defineConfig({
+  optimizeDeps: { entries: ['src/scene.html'] },
   build: {
     cssCodeSplit: false,
     modulePreload: false,
-    rolldownOptions: { output: { format: 'iife', codeSplitting: false } },
+    rolldownOptions: {
+      input: join(root, 'src/scene.html'),
+      output: { format: 'iife', codeSplitting: false },
+    },
   },
   plugins: [{
     name: 'standalone-scene',
     configureServer(server) {
-      // Serve the live source at the same address during development.
       server.middlewares.use((request, _response, next) => {
-        request.url = request.url?.replace(/^\/ingex\.html(?=\?|$)/, '/index.html');
+        request.url = request.url?.replace(/^\/(?:index\.html|ingex\.html)?(?=\?|$)/, '/src/scene.html');
         next();
       });
     },
     async writeBundle({ dir }, bundle) {
-      const built = join(dir, entryName);
-      const local = join(root, entryName);
-      await writeFile(built, await embedScene(bundle, dir));
-      await copyFile(built, local + '.tmp');
-      await rename(local + '.tmp', local);
+      const html = await embedScene(bundle, dir);
+      for (const name of entryNames) {
+        const built = join(dir, name);
+        const local = join(root, name);
+        await writeFile(built, html);
+        await copyFile(built, local + '.tmp');
+        await rename(local + '.tmp', local);
+      }
     },
   }],
 });

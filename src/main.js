@@ -5,7 +5,7 @@ import { loadSupra } from './car.js';
 import { createCamera, shots } from './camera.js';
 import { vehicleProbe } from './reflections.js';
 import { makeLens } from './lens.js';
-import { start } from './route.js';
+import { covered, span, start, wrap } from './route.js';
 
 const el = (id) => document.getElementById(id);
 const stage=el('drive'),canvas=el('road'),controls=el('controls'),status=el('loading'),details=el('details');
@@ -111,7 +111,7 @@ async function init() {
   scene.environmentIntensity=.88;
   const road=buildRoad(location.materials);
   scene.add(skyDome(location.sky),road.world,car.rig);
-  const lens=makeLens(renderer),probe=vehicleProbe(renderer,scene,car,compact);
+  const lens=makeLens(renderer,compact),probe=vehicleProbe(renderer,scene,car,compact);
   let s=start,time=0,speed=19.2,aspect=1,rateScale=1,lastPerf=0,slowFrames=0,fastFrames=0,performanceFrames=0;
   const surfaceSize=new THREE.Vector2(),target=new THREE.Vector3();
   const lightX=new THREE.Vector3().crossVectors(new THREE.Vector3(0,1,0),sunDirection).normalize();
@@ -164,12 +164,13 @@ async function init() {
     placeSun(carFrame);
     const focus=rigCamera.place(carFrame,time,dt,aspect);
     probe(s,renderTime,carFrame);
-    lens.render(scene,camera,car.rig,dt,rolled/car.radius,focus,playing);
+    const openSky=!covered(Math.floor(wrap(s)/span));
+    lens.render(scene,camera,car.rig,dt,rolled/car.radius,focus,playing,time,s-start,openSky);
     const speedText=Math.round(speed*3.6)+' км/ч';
     if(speedText!==oldSpeed){el('speed').textContent=speedText;oldSpeed=speedText;}
     // Reduce pixel cost only after sustained slow frames, excluding loading,
     // focus changes and pauses. Camera timing and tyre speed stay in metres.
-    if(playing && now>lastPerf+800 && wallDelta<.13){
+    if(playing && now>lastPerf+800 && wallDelta<.32){
       performanceFrames++;
       if(wallDelta>.036)slowFrames++;
       if(wallDelta<.0195)fastFrames++;

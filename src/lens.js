@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { createSmoke } from './smoke.js';
 
 const vertex = `
   varying vec2 st;
@@ -23,13 +24,27 @@ const glareFragment = `
 
 const compositeFragment = `
   varying vec2 st;
-  uniform sampler2D beauty, depthMap, glare;
+  uniform sampler2D beauty, depthMap, glare, smokeMap;
   uniform mat4 invVP, prevVP, invCar, prevCar;
-  uniform vec2 texel;
+  uniform vec2 texel, smokeSize;
   uniform float shutter, wheelStep, focus, nearZ, farZ, grainFrame;
 
   float linearDepth(float d) { return nearZ*farZ / (farZ - d*(farZ-nearZ)); }
   float noise(vec2 p) { return fract(52.9829189*fract(dot(p,vec2(.06711056,.00583715)))); }
+  vec4 resolveSmoke(float z) {
+    vec2 grid=st*smokeSize-.5, cell=floor(grid), part=fract(grid);
+    vec4 result=vec4(0.);
+    float weights=0.;
+    for(int y=0;y<2;y++)for(int x=0;x<2;x++) {
+      vec2 offset=vec2(float(x),float(y));
+      vec2 coord=(clamp(cell+offset,vec2(0.),smokeSize-1.)+.5)/smokeSize;
+      float difference=(linearDepth(texture2D(depthMap,coord).r)-z)/(.13+.047*z);
+      vec2 bilinear=mix(1.-part,part,offset);
+      float w=bilinear.x*bilinear.y/(1.+difference*difference);
+      result+=texture2D(smokeMap,coord)*w;weights+=w;
+    }
+    return result/max(.012,weights);
+  }
   void main() {
     float d = texture2D(depthMap,st).r;
     vec4 world = invVP * vec4(st*2.-1.,d*2.-1.,1.);
@@ -68,6 +83,8 @@ const compositeFragment = `
       weights+=weight;
     }
     col=col/weights+texture2D(glare,st).rgb*.095;
+    vec4 soot=resolveSmoke(z);
+    col=col*(1.-soot.a)+soot.rgb;
     vec2 lens=st*2.-1.;
     col*=1.-.063*pow(clamp(dot(lens,lens)*.53,0.,1.),1.42);
     gl_FragColor=vec4(col,1.);
@@ -80,7 +97,7 @@ function screenPass(fragment, uniforms) {
   return new THREE.ShaderMaterial({ vertexShader:vertex,fragmentShader:fragment,uniforms,depthTest:false,depthWrite:false });
 }
 
-export function makeLens(renderer) {
+export function makeLens(renderer,compact) {
   const floatBuffers=renderer.extensions.has('EXT_color_buffer_float');
   const type=floatBuffers?THREE.HalfFloatType:THREE.UnsignedByteType;
   const gl=renderer.getContext();
@@ -88,6 +105,7 @@ export function makeLens(renderer) {
   const samples=Array.from(supported || []).find(n=>n<=4) || 0;
   const main=new THREE.WebGLRenderTarget(1,1,{type,samples});
   main.depthTexture=new THREE.DepthTexture(1,1,THREE.UnsignedIntType);
+  const smoke=createSmoke(main.depthTexture,compact,type);
   const low = () => new THREE.WebGLRenderTarget(1,1,{type,depthBuffer:false});
   const highlight=low(),halo=low();
   const container=new THREE.Scene(), camera=new THREE.Camera();
@@ -96,6 +114,7 @@ export function makeLens(renderer) {
   shape.setAttribute('uv',new THREE.Float32BufferAttribute([0,0,2,0,0,2],2));
   const u = {
     beauty:{value:main.texture},depthMap:{value:main.depthTexture},glare:{value:halo.texture},
+    smokeMap:{value:smoke.target.texture},smokeSize:{value:smoke.size},
     invVP:{value:new THREE.Matrix4()},prevVP:{value:new THREE.Matrix4()},
     invCar:{value:new THREE.Matrix4()},prevCar:{value:new THREE.Matrix4()},
     texel:{value:new THREE.Vector2()},shutter:{value:0},wheelStep:{value:0},focus:{value:7},
@@ -105,13 +124,14 @@ export function makeLens(renderer) {
   const blur=screenPass(glareFragment,b), finish=screenPass(compositeFragment,u);
   const quad=new THREE.Mesh(shape,blur);quad.frustumCulled=false;container.add(quad);
   const vp=new THREE.Matrix4(),lastVP=new THREE.Matrix4(),lastCar=new THREE.Matrix4();
-  let valid=false;
+  let valid=false,daylight=1;
   return {
     resize(w,h) {
       main.setSize(w,h);highlight.setSize(Math.max(2,w>>2),Math.max(2,h>>2));halo.setSize(highlight.width,highlight.height);
+      smoke.resize(w,h);
       u.texel.value.set(1/w,1/h);valid=false;
     },
-    render(scene, view, car, elapsed, wheelAngle, focus, moving) {
+    render(scene, view, car, elapsed, wheelAngle, focus, moving, time, distance, openSky) {
       view.updateMatrixWorld();
       vp.multiplyMatrices(view.projectionMatrix,view.matrixWorldInverse);
       u.invVP.value.copy(vp).invert();
@@ -122,6 +142,9 @@ export function makeLens(renderer) {
       u.focus.value=focus;u.nearZ.value=view.near;u.farZ.value=view.far;
       if(moving)u.grainFrame.value=(u.grainFrame.value+17)%8192;
       renderer.setRenderTarget(main);renderer.render(scene,view);
+      daylight=THREE.MathUtils.damp(daylight,openSky?1:.57,4,elapsed);
+      smoke.update(view,u.invCar.value,u.invVP.value,time,distance,daylight);
+      quad.material=smoke.material;renderer.setRenderTarget(smoke.target);renderer.render(container,camera);
       quad.material=blur;b.image.value=main.texture;b.extract.value=true;b.stepSize.value.set(2/main.width,2/main.height);
       renderer.setRenderTarget(highlight);renderer.render(container,camera);
       b.image.value=highlight.texture;b.extract.value=false;b.stepSize.value.set(2.3/highlight.width,2.3/highlight.height);
