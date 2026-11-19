@@ -31,13 +31,12 @@ async function embedScene(bundle, directory) {
     }
   }
 
-  const credits = await readFile(join(root, 'public', 'credits.html'), 'utf8');
-  const sources = credits.match(/<ul>[\s\S]*?<\/ul>/)[0];
+  const credits = await readFile(join(root, 'public/CREDITS.txt'), 'base64');
   const script = game.code.replace(/<\/script/gi, '<\\/script');
   return html
+    .replace('href="./CREDITS.txt"', 'href="data:text/plain;charset=utf-8;base64,' + credits + '"')
     .replace(/\s*<script\b[^>]*src="[^"]+"[^>]*><\/script>/, '')
     .replace(/<link\b[^>]*rel="stylesheet"[^>]*>/, () => '<style>' + css + '</style>')
-    .replace(/<p id="source-link">[\s\S]*?<\/p>/, () => '<details><summary>Исходные материалы</summary>' + sources + '</details>')
     .replace('</body>', () =>
       '<script id="scene-assets" type="application/json">' + JSON.stringify(assets) + '</script>\n' +
       '<script>' + script + '</script>\n</body>');

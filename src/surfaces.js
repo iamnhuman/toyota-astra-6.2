@@ -5,7 +5,9 @@ export const sunDirection = new THREE.Vector3(.599416, .669852, .438176).normali
 
 export async function loadLocation(renderer, manager) {
   const loader = new THREE.TextureLoader(manager);
-  const maxAnisotropy = Math.min(12, renderer.capabilities.getMaxAnisotropy());
+  const hardwareAnisotropy = renderer.capabilities.getMaxAnisotropy();
+  const maxAnisotropy = Math.min(12, hardwareAnisotropy);
+  const hdSurface = {value:false};
   async function texture(file, color, repeat) {
     const map = await loader.loadAsync('/' + file);
     map.colorSpace = color ? THREE.SRGBColorSpace : THREE.NoColorSpace;
@@ -45,7 +47,9 @@ export async function loadLocation(renderer, manager) {
        dash *= 1. - smoothstep(1.95-dashAA, 1.95+dashAA, phase);
        float detail = dot(texture2D(map, vMapUv*3.19 + .34).rgb, vec3(.3,.52,.18));
        float macro = texture2D(map, roadMetres.yx * vec2(.014,.067) + .16).g;
-       float tracks = exp(-7.0*pow(crossroad-1.20, 2.)) + exp(-7.0*pow(crossroad-2.72,2.));
+       vec2 tracksOffset=crossroad-vec2(1.20,2.72);
+       vec2 wheelPaths=exp(-7.*tracksOffset*tracksOffset);
+       float tracks=wheelPaths.x+wheelPaths.y;
        diffuseColor.rgb *= (.84 + .52*macro) * (1.0-.18*tracks);
        float pigment = max(edge,dash) * (.42+.49*smoothstep(.052,.31,detail));
        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(.64,.637,.56), pigment);
@@ -67,6 +71,31 @@ export async function loadLocation(renderer, manager) {
     name: 'Rock and grass', map: hillside, roughness: .97, vertexColors: true,
     side: THREE.DoubleSide,
   });
+  function addAggregate(material, frequency, relief) {
+    const compile=material.onBeforeCompile;
+    material.onBeforeCompile=function(shader,renderer){
+      compile.call(this,shader,renderer);
+      shader.uniforms.hdSurface=hdSurface;
+      shader.fragmentShader='uniform bool hdSurface;\n'+shader.fragmentShader.replace(
+        '#include <color_fragment>', `#include <color_fragment>
+          if(hdSurface){
+            vec2 fineUV=vMapUv*${frequency}+vec2(.17,.41);
+            float grain=texture2D(map,fineUV).g-texture2D(map,fineUV,2.5).g;
+            diffuseColor.rgb*=1.+clamp(1.65*grain,-.30,.36);
+          }`,
+      ).replace('#include <normal_fragment_maps>',`#include <normal_fragment_maps>
+        #ifdef USE_NORMALMAP_TANGENTSPACE
+        if(hdSurface){
+          vec2 grains=texture2D(normalMap,vNormalMapUv*${frequency}+vec2(.17,.41)).xy*2.-1.;
+          normal=normalize(normal+tbn*vec3(grains*${relief},0.));
+        }
+        #endif`);
+    };
+    material.customProgramCacheKey=()=>material.name+'-aggregate';
+  }
+  addAggregate(road,5.3,.27);
+  for(const m of [concrete,castConcrete,darkConcrete])addAggregate(m,3.7,.22);
+  addAggregate(earth,5.9,.0);
   const steel = new THREE.MeshStandardMaterial({
     name: 'Galvanised steel', color: 0xa1a7a6, metalness: .73, roughness: .38, side: THREE.DoubleSide,
   });
@@ -91,7 +120,15 @@ export async function loadLocation(renderer, manager) {
   pmrem.dispose();
   radiance.dispose();
   return { materials: { road, concrete, castConcrete, darkConcrete, earth, steel, darkMetal, enamel, amber, lamp, foliage },
-    sky, environment: env };
+    sky, environment: env,
+    setHD(enabled) {
+      hdSurface.value=enabled;
+      const level=enabled?hardwareAnisotropy:maxAnisotropy;
+      for(const map of [roadColor,roadNormal,roadARM,concreteColor,concreteNormal,hillside,pine]){
+        if(map.anisotropy===level)continue;
+        map.anisotropy=level;map.needsUpdate=true;
+      }
+    } };
 }
 
 // The sphere follows the viewing direction only. The main camera and the

@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "start": "vite --host 127.0.0.1 --port 4186 --strictPort",
-    "build": "vite build"
+    "build": "vite build",
+    "test": "node --test"
   },
   "dependencies": {
     "three": "0.180.0"
